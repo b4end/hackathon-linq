@@ -22,7 +22,7 @@ hackathon-linq/
      (ячейка 1 их примерного ноутбука делает это, либо вручную `!cp ... /auto/cache/<логин>/`);
    - скачать папку `tpu_pycloud_format` (4 файла как есть) в корень этого репо;
    - скачать `ILSVRC2012_val_00000045.JPEG` в любую папку на VPS (в гит не кладём).
-3. VPS: `git clone`, `python -m venv .venv`, `pip install -r requirements.txt`,
+3. VPS: `git clone`, `python3 -m venv .venv`, `source .venv/bin/activate`, `pip install -r requirements.txt`,
    `cp .env.example .env`, заполнить.
 
 ## Проверки
