@@ -1,0 +1,16 @@
+# секреты и локальные конфиги
+.env
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# артефакты и данные
+*.tpu
+*.onnx
+*.pt
+*.pt2
+artifacts/
+calib/
+data/
+logs/
