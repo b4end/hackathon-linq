@@ -1,5 +1,6 @@
 """Воркер задач: читает видео/фото, гоняет FrameChain через CloudBackend (RabbitMQ->TPU),
-пишет события и evidence-кадры. Один поток, очередь задач — TPU не перегружаем."""
+пишет события и evidence-кадры. Один поток, очередь задач — TPU не перегружаем.
+При ошибках соединения задача автоматически повторяется JOB_RETRIES раз."""
 import json
 import queue
 import threading
@@ -8,7 +9,7 @@ from pathlib import Path
 
 import cv2
 
-from linq.backend.cloud import CloudBackend
+from linq.backend.cloud import CONNECTION_ERRORS, CloudBackend
 from linq.config import Settings
 from service import storage
 from service.chain import FrameChain
@@ -16,9 +17,12 @@ from service.events import EventRegistry
 from service.scenarios import ScenarioConfig, ScenarioEngine, Zone
 
 ZONES_PATH = Path(__file__).resolve().parents[1] / 'config' / 'zones.json'
+JOB_RETRIES = 2          # сколько раз повторять задачу при ошибках связи
+RETRY_PAUSE_S = 5.0      # пауза между попытками, сек
 
 
 def load_zones(path=ZONES_PATH):
+    """Читает полигоны зон и частоту анализа из config/zones.json."""
     if not path.exists():
         return [], 1.0
     data = json.loads(path.read_text(encoding='utf-8'))
@@ -91,26 +95,40 @@ class Worker:
             'started_at': self._started,
         }
 
-    # --- main loop ---
+    # --- главный цикл ---
     def _loop(self):
         while not self._stopping:
             job_id = self.queue.get()
             if job_id is None:
                 break
             try:
-                self._run_job(job_id)
-            except Exception as e:
+                self._run_with_retries(job_id)
+            except Exception as e:  # задача не должна убивать воркер
                 storage.update_job(job_id, status='error',
                                    error=f'{type(e).__name__}: {e}',
                                    finished_at=time.time())
             finally:
                 self.queue.task_done()
 
+    def _run_with_retries(self, job_id):
+        attempt = 0
+        while True:
+            try:
+                self._run_job(job_id)
+                return
+            except CONNECTION_ERRORS as e:
+                attempt += 1
+                if attempt > JOB_RETRIES:
+                    raise
+                storage.update_job(job_id, status='running',
+                                   error=f'повтор {attempt} после {type(e).__name__}')
+                time.sleep(RETRY_PAUSE_S)
+
     def _run_job(self, job_id):
         self._started = self._started or time.time()
         job = storage.get_job(job_id)
         path = Path(job['filename'])
-        storage.update_job(job_id, status='running', started_at=time.time())
+        storage.update_job(job_id, status='running', started_at=time.time(), error=None)
 
         registry = EventRegistry(confirm_frames=self.cfg.confirm_frames,
                                  grace_frames=self.cfg.grace_frames)
@@ -127,8 +145,10 @@ class Worker:
                             [cv2.IMWRITE_JPEG_QUALITY, 85])
                 storage.set_event_evidence(ev.id, name)
 
-        registry.on_open, registry.on_hit, registry.on_close = on_open, storage.touch_event, storage.close_event
+        registry.on_open, registry.on_hit, registry.on_close = \
+            on_open, storage.touch_event, storage.close_event
 
+        # --- одиночное фото ---
         if job['kind'] == 'image':
             frame = cv2.imread(str(path))
             if frame is None:
@@ -139,9 +159,11 @@ class Worker:
             registry.flush(1.0)
             with self._lock:
                 self._frames += 1
-            storage.update_job(job_id, frames_done=1, status='done', finished_at=time.time())
+            storage.update_job(job_id, frames_done=1, status='done',
+                               error=None, finished_at=time.time())
             return
 
+        # --- видео: потоковое чтение, каждый step-й кадр ---
         cap = cv2.VideoCapture(str(path))
         if not cap.isOpened():
             raise RuntimeError(f'не открывается видео {path}')
@@ -165,4 +187,4 @@ class Worker:
             idx += 1
         cap.release()
         registry.flush(idx / fps_src if fps_src else idx)
-        storage.update_job(job_id, status='done', finished_at=time.time())
+        storage.update_job(job_id, status='done', error=None, finished_at=time.time())

@@ -1,5 +1,5 @@
 """Боевой бэкенд: RabbitMQ -> их TPU-воркеры.
-Логика сообщений 1:1 из их example.ipynb, плюс реконнект и валидация входов.
+Логика сообщений 1:1 из их example.ipynb, плюс реконнект с бэкoffом и ретраями.
 Требует VPN и пакет tpu_pycloud_format в корне репо (см. README)."""
 import json
 import time
@@ -18,18 +18,23 @@ from tpu_pycloud_format import (
     serialize,
 )
 
+# ошибки, после которых имеет смысл повторять попытку
+CONNECTION_ERRORS = (pika.exceptions.AMQPError, OSError)
+
 
 class CloudBackend:
     name = 'cloud'
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, max_attempts: int = 4, backoff_base: float = 1.5):
         self.s = settings
+        self.max_attempts = max_attempts
+        self.backoff_base = backoff_base
         self._conn = None
         self._ch = None
         self.last_worker = None      # инфо о воркере из последнего ответа (для бенча)
         self.last_latency_s = 0.0
 
-    # --- соединение ---------------------------------------------------------
+    # --- соединение -----------------------------------------------------------
     def _channel(self):
         if self._conn is None or self._conn.is_closed:
             self._conn = pika.BlockingConnection(pika.ConnectionParameters(
@@ -49,17 +54,19 @@ class CloudBackend:
         self._conn = None
         self._ch = None
 
-    # --- инференс -------------------------------------------------------------
+    # --- инференс ---------------------------------------------------------------
     def run(self, program: str, tensors: dict) -> dict:
         spec = PROGRAMS[program]
         validate_inputs(spec, tensors)
         last_err = None
-        for attempt in (1, 2):  # один ретрай на сетевых ошибках
+        for attempt in range(1, self.max_attempts + 1):
             try:
                 return self._run_once(spec, tensors)
-            except pika.exceptions.AMQPError as err:
+            except CONNECTION_ERRORS as err:
                 last_err = err
                 self._reset()
+                if attempt < self.max_attempts:
+                    time.sleep(min(10.0, self.backoff_base ** attempt))
         raise last_err
 
     def _run_once(self, spec, tensors: dict) -> dict:

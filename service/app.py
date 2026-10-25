@@ -113,3 +113,12 @@ def models_info():
 def zones():
     p = BASE / 'config' / 'zones.json'
     return json.loads(p.read_text(encoding='utf-8')) if p.exists() else {'zones': []}
+
+@app.post('/api/jobs/{job_id}/retry')
+def retry_job(job_id: str):
+    if storage.get_job(job_id) is None:
+        raise HTTPException(404)
+    storage.update_job(job_id, status='queued', error=None,
+                       frames_done=0, started_at=None, finished_at=None)
+    worker.submit(job_id)
+    return {'ok': True}
