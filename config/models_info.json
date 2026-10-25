@@ -1,0 +1,6 @@
+{
+  "yolo_detect · yolov8m.tpu": {"source": "Ultralytics YOLOv8m, COCO", "passport": "mAP50-95 ≈ 0.50 (val COCO)", "classes": "person, cell phone, car, motorcycle, bus, truck"},
+  "yolo_pose · yolov8m-pose.tpu": {"source": "Ultralytics YOLOv8m-pose", "passport": "mAP50-95 pose ≈ 0.60 (val COCO)", "classes": "person + 17 keypoints"},
+  "smoke · smoke_model.tpu": {"source": "dmmmit/smoking_detection (Nuclear-hack 2024)", "passport": "метрики автора из README", "classes": "cigarette, person, smoke"},
+  "harness · fallprotection.tpu": {"source": "Thalos fall-protection v1 (Roboflow → HF)", "passport": "открытых метрик нет — оценим на тест-клипах", "classes": "harness_worn/missing, lanyard_*, person_at_height, edge_zone"}
+}

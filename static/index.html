@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="ru"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LinQ Safety · Pokus</title>
+<style>
+:root{--bg:#0f1115;--card:#161a22;--line:#262b36;--txt:#e6e8eb;--mut:#8b94a7;--acc:#2f6bff;--ok:#2fbf71;--warn:#ffb020;--bad:#ff5c5c}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif}
+header{padding:12px 20px;background:var(--card);border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+header h1{font-size:16px;margin:0}
+.chip{background:#0f1320;border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:12px;color:var(--mut)}
+.wrap{display:grid;grid-template-columns:330px 1fr;gap:16px;padding:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:16px}
+.card h2{margin:0 0 10px;font-size:12px;letter-spacing:.8px;text-transform:uppercase;color:var(--mut)}
+.m{display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px dashed var(--line)}
+.m b{font-variant-numeric:tabular-nums;text-align:right}
+.bar{height:8px;background:#0f1320;border-radius:4px;overflow:hidden;margin:3px 0 8px}
+.bar i{display:block;height:100%;background:var(--acc)}
+.drop{border:2px dashed var(--line);border-radius:10px;padding:26px;text-align:center;color:var(--mut);cursor:pointer}
+.drop.over{border-color:var(--acc);color:var(--txt)}
+button{background:var(--acc);border:0;color:#fff;border-radius:6px;padding:5px 10px;cursor:pointer;font-size:12px}
+button.ghost{background:transparent;border:1px solid var(--line);color:var(--mut)}
+button.ok{background:transparent;border:1px solid var(--ok);color:var(--ok)}
+button.bad{background:transparent;border:1px solid var(--bad);color:var(--bad)}
+.ev{display:grid;grid-template-columns:180px 1fr;gap:10px;background:#0f1320;border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:10px}
+.ev img{width:180px;height:110px;object-fit:cover;border-radius:6px;background:#000}
+.ev .mut{color:var(--mut);font-size:12px}
+.st-new{color:var(--warn)}.st-confirmed{color:var(--ok)}.st-rejected{color:var(--bad)}
+svg.spark{width:100%;height:44px;background:#0f1320;border-radius:6px;margin:6px 0}
+.filters{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+select{background:#0f1320;color:var(--txt);border:1px solid var(--line);border-radius:6px;padding:5px 8px}
+.mut{color:var(--mut)}
+</style></head>
+<body>
+<header>
+  <h1>LinQ Safety · команда Pokus</h1>
+  <span class="chip">LinQ TPU H1M</span>
+  <span class="chip">VPS → VPN → RabbitMQ → TPU</span>
+  <span class="chip" id="conn">—</span>
+  <span id="programs"></span>
+</header>
+<div class="wrap">
+  <div>
+    <div class="card"><h2>О системе и моделях</h2><div id="models_info" class="mut"></div></div>
+    <div class="card"><h2>Метрики обработки</h2>
+      <div class="m"><span>FPS анализа</span><b id="m_fps">—</b></div>
+      <div class="m"><span>Кадров обработано</span><b id="m_frames">—</b></div>
+      <div class="m"><span>Вызовов TPU</span><b id="m_calls">—</b></div>
+      <div class="m"><span>Latency avg / p95, мс</span><b id="m_lat">—</b></div>
+      <svg class="spark" id="spark"></svg>
+      <div class="m"><span>Задач в очереди</span><b id="m_queue">—</b></div>
+      <div id="bench" class="mut" style="margin-top:8px;font-size:12px"></div>
+    </div>
+    <div class="card"><h2>События по типам</h2><div id="by_type" class="mut">пока пусто</div></div>
+    <div class="card"><h2>Проверка оператором</h2>
+      <div class="m"><span>Новые</span><b id="s_new">0</b></div>
+      <div class="m"><span>Подтверждено</span><b id="s_conf">0</b></div>
+      <div class="m"><span>Отклонено</span><b id="s_rej">0</b></div>
+      <div class="m"><span>Точность (подтв/всё провер.)</span><b id="s_prec">—</b></div>
+    </div>
+  </div>
+  <div>
+    <div class="card"><h2>Загрузка видео / фото</h2>
+      <div class="drop" id="drop">Перетащите файл сюда или кликните<br>
+        <small>mp4, mov, avi, mkv, webm, jpg, png, webp</small></div>
+      <input type="file" id="file" hidden>
+      <div id="jobs" style="margin-top:10px"></div>
+    </div>
+    <div class="card"><h2>Лента событий</h2>
+      <div class="filters">
+        <select id="f_type"><option value="">все типы</option></select>
+        <select id="f_status"><option value="">все статусы</option><option>new</option><option>confirmed</option><option>rejected</option></select>
+        <button class="ghost" id="refresh">обновить</button>
+      </div>
+      <div id="events" class="mut">ждём события…</div>
+    </div>
+  </div>
+</div>
+<script>
+const $=s=>document.querySelector(s);
+const LABELS={running:'Бег по цеху',proximity:'Опасное сближение с техникой',phone:'Мобильный телефон',smoking:'Курение вне отведённого места',fire:'Дым / открытый огонь вне места',forbidden:'Перелез / пролез под ограждение',height:'Работа на высоте без привязи',fall:'Падение / неподвижное лежание'};
+const ST={new:'новое',confirmed:'подтверждено',rejected:'отклонено',closed:'закрыто'};
+let spark=[];
+const j=(u,o)=>fetch(u,o).then(r=>r.json());
+const esc=s=>String(s??'').replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+for(const k in LABELS) $('#f_type').append(new Option(LABELS[k],k));
+
+$('#drop').onclick=()=>$('#file').click();
+$('#drop').ondragover=e=>{e.preventDefault();$('#drop').classList.add('over')};
+$('#drop').ondragleave=()=>$('#drop').classList.remove('over');
+$('#drop').ondrop=e=>{e.preventDefault();$('#drop').classList.remove('over');send(e.dataTransfer.files[0])};
+$('#file').onchange=e=>send(e.target.files[0]);
+async function send(f){if(!f)return;const fd=new FormData();fd.append('file',f);
+  await fetch('/api/uploads',{method:'POST',body:fd});poll()}
+$('#refresh').onclick=poll;
+$('#f_type').onchange=poll;$('#f_status').onchange=poll;
+
+async function setStatus(id,st){await fetch(`/api/events/${id}/status`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:st})});poll()}
+
+function renderJobs(js){$('#jobs').innerHTML=js.map(x=>{
+  const tot=x.frames_total||0,done=x.frames_done||0,pct=tot?Math.round(done/tot*100):0;
+  return `<div class="m"><span>${esc(x.id)} · ${esc(x.kind)} · ${x.status==='error'?`<span class="st-rejected">${esc(x.error||'error')}</span>`:esc(x.status)}</span><b>${done}/${tot||'?'}</b></div>
+  <div class="bar"><i style="width:${x.status==='done'?100:pct}%"></i></div>`}).join('')}
+
+function renderEvents(evs){if(!evs.length){$('#events').innerHTML='<span class="mut">ждём события…</span>';return}
+  $('#events').innerHTML=evs.map(e=>`<div class="ev">
+   ${e.evidence?`<img src="/evidence/${esc(e.evidence)}" loading="lazy">`:'<div></div>'}
+   <div><div class="t">${esc(LABELS[e.etype]||e.etype)}</div>
+    <div class="mut">job ${esc(e.job_id)} · t=${(e.started_t||0).toFixed(1)}–${(e.ended_t??e.last_t??0).toFixed(1)}с · conf ${Math.round((e.conf||0)*100)}% ${e.meta&&e.meta.zone?`· зона ${esc(e.meta.zone)}`:''}</div>
+    <div class="st-${esc(e.status)}" style="font-size:12px;margin:4px 0">${esc(ST[e.status]||e.status)} · событие #${e.id}</div>
+    ${e.status==='new'?`<button class="ok" onclick="setStatus(${e.id},'confirmed')">подтвердить</button> <button class="bad" onclick="setStatus(${e.id},'rejected')">отклонить</button>`:''}
+   </div></div>`).join('')}
+window.setStatus=setStatus}
+
+function renderPerf(p){const L=p.live||{};
+  $('#m_fps').textContent=L.analysis_fps??'—';$('#m_frames').textContent=L.frames??0;
+  $('#m_calls').textContent=L.calls??0;
+  $('#m_lat').textContent=(L.lat_avg_ms??'—')+' / '+(L.lat_p95_ms??'—');
+  $('#m_queue').textContent=L.queue??0;
+  $('#conn').textContent=L.calls?'TPU: отвечает':'TPU: ожидание';
+  if(L.lat_avg_ms!=null){spark.push(L.lat_avg_ms);spark=spark.slice(-60);
+    const mx=Math.max(...spark,1),pts=spark.map((v,i)=>`${i*(300/59)},${42-v/mx*38}`).join(' ');
+    $('#spark').innerHTML=`<polyline points="${pts}" fill="none" stroke="#2f6bff" stroke-width="2"/>`}
+  $('#bench').innerHTML=(p.bench||[]).slice(0,3).map(b=>`bench ${esc(b.program)}: p95 ${Math.round((b.latency_p95_s||0)*1000)} мс, fps ${ (b.fps||0).toFixed(2)}`).join('<br>');
+  $('#programs').innerHTML=(p.programs||[]).map(x=>`<span class="chip">${esc(x.name)}</span>`).join(' ')}
+
+function renderAnalytics(a){const bt=a.by_type||{},keys=Object.keys(bt);
+  $('#by_type').innerHTML=keys.length?keys.map(k=>{const mx=Math.max(...Object.values(bt));
+    return `<div class="m"><span>${esc(LABELS[k]||k)}</span><b>${bt[k]}</b></div><div class="bar"><i style="width:${bt[k]/mx*100}%"></i></div>`}).join(''):'пока пусто';
+  const bs=a.by_status||{};$('#s_new').textContent=bs.new||0;$('#s_conf').textContent=bs.confirmed||0;
+  $('#s_rej').textContent=bs.rejected||0;$('#s_prec').textContent=a.precision==null?'—':Math.round(a.precision*100)+'%'}
+
+async function poll(){
+  const [js,evs,an,pf]=await Promise.all([
+    j('/api/jobs'),
+    j(`/api/events?limit=30&etype=${encodeURIComponent($('#f_type').value)}&status=${encodeURIComponent($('#f_status').value)}`),
+    j('/api/analytics'), j('/api/performance')]);
+  renderJobs(js);renderEvents(evs);renderAnalytics(an);renderPerf(pf)}
+
+j('/api/models_info').then(mi=>{$('#models_info').innerHTML=Object.entries(mi).map(([k,v])=>
+  `<div class="m" style="display:block;margin-bottom:8px"><b>${esc(k)}</b><br>
+   <span class="mut">${esc(v.source||'')}<br>${esc(v.passport||'')}<br>классы: ${esc(v.classes||'')}</span></div>`).join('')||'—'});
+poll();setInterval(poll,1500);
+</script>
+</body></html>
