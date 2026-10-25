@@ -29,6 +29,8 @@ svg.spark{width:100%;height:44px;background:#0f1320;border-radius:6px;margin:6px
 .filters{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}
 select{background:#0f1320;color:var(--txt);border:1px solid var(--line);border-radius:6px;padding:5px 8px}
 .mut{color:var(--mut)}
+.status{font-size:12px;color:var(--mut);padding:4px 20px}
+.status.err{color:var(--bad)}
 </style></head>
 <body>
 <header>
@@ -38,9 +40,10 @@ select{background:#0f1320;color:var(--txt);border:1px solid var(--line);border-r
   <span class="chip" id="conn">—</span>
   <span id="programs"></span>
 </header>
+<div id="errline" class="status"></div>
 <div class="wrap">
   <div>
-    <div class="card"><h2>О системе и моделях</h2><div id="models_info" class="mut"></div></div>
+    <div class="card"><h2>О системе и моделях</h2><div id="models_info" class="mut">—</div></div>
     <div class="card"><h2>Метрики обработки</h2>
       <div class="m"><span>FPS анализа</span><b id="m_fps">—</b></div>
       <div class="m"><span>Кадров обработано</span><b id="m_frames">—</b></div>
@@ -55,7 +58,7 @@ select{background:#0f1320;color:var(--txt);border:1px solid var(--line);border-r
       <div class="m"><span>Новые</span><b id="s_new">0</b></div>
       <div class="m"><span>Подтверждено</span><b id="s_conf">0</b></div>
       <div class="m"><span>Отклонено</span><b id="s_rej">0</b></div>
-      <div class="m"><span>Точность (подтв/всё провер.)</span><b id="s_prec">—</b></div>
+      <div class="m"><span>Точность</span><b id="s_prec">—</b></div>
     </div>
   </div>
   <div>
@@ -63,6 +66,7 @@ select{background:#0f1320;color:var(--txt);border:1px solid var(--line);border-r
       <div class="drop" id="drop">Перетащите файл сюда или кликните<br>
         <small>mp4, mov, avi, mkv, webm, jpg, png, webp</small></div>
       <input type="file" id="file" hidden>
+      <div id="uplmsg" class="mut" style="margin-top:6px"></div>
       <div id="jobs" style="margin-top:10px"></div>
     </div>
     <div class="card"><h2>Лента событий</h2>
@@ -76,69 +80,143 @@ select{background:#0f1320;color:var(--txt);border:1px solid var(--line);border-r
   </div>
 </div>
 <script>
-const $=s=>document.querySelector(s);
-const LABELS={running:'Бег по цеху',proximity:'Опасное сближение с техникой',phone:'Мобильный телефон',smoking:'Курение вне отведённого места',fire:'Дым / открытый огонь вне места',forbidden:'Перелез / пролез под ограждение',height:'Работа на высоте без привязи',fall:'Падение / неподвижное лежание'};
-const ST={new:'новое',confirmed:'подтверждено',rejected:'отклонено',closed:'закрыто'};
-let spark=[];
-const j=(u,o)=>fetch(u,o).then(r=>r.json());
-const esc=s=>String(s??'').replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
-for(const k in LABELS) $('#f_type').append(new Option(LABELS[k],k));
+'use strict';
+var $ = function(s){ return document.querySelector(s); };
+var LABELS = {running:'Бег по цеху', proximity:'Опасное сближение с техникой', phone:'Мобильный телефон', smoking:'Курение вне отведённого места', fire:'Дым / открытый огонь вне места', forbidden:'Перелез / пролез под ограждение', height:'Работа на высоте без привязи', fall:'Падение / неподвижное лежание'};
+var ST = {'new':'новое', confirmed:'подтверждено', rejected:'отклонено', closed:'закрыто'};
+var spark = [];
 
-$('#drop').onclick=()=>$('#file').click();
-$('#drop').ondragover=e=>{e.preventDefault();$('#drop').classList.add('over')};
-$('#drop').ondragleave=()=>$('#drop').classList.remove('over');
-$('#drop').ondrop=e=>{e.preventDefault();$('#drop').classList.remove('over');send(e.dataTransfer.files[0])};
-$('#file').onchange=e=>send(e.target.files[0]);
-async function send(f){if(!f)return;const fd=new FormData();fd.append('file',f);
-  await fetch('/api/uploads',{method:'POST',body:fd});poll()}
-$('#refresh').onclick=poll;
-$('#f_type').onchange=poll;$('#f_status').onchange=poll;
+function esc(s){ return String(s==null?'':s).replace(/[<>&"]/g, function(c){ return {'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]; }); }
+function showError(t){ var el=$('#errline'); el.textContent=t||''; el.className=t?'status err':'status'; }
+function showUpl(t){ $('#uplmsg').textContent=t||''; }
+function api(url, opts){
+  return fetch(url, opts).then(function(r){
+    if(!r.ok){ return r.text().then(function(t){ throw new Error('HTTP '+r.status+' '+t.slice(0,200)); }); }
+    return r.json();
+  });
+}
 
-async function setStatus(id,st){await fetch(`/api/events/${id}/status`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:st})});poll()}
+/* ---- загрузка файла ---- */
+var drop = $('#drop'), fileInput = $('#file');
+drop.addEventListener('click', function(){ fileInput.click(); });
+drop.addEventListener('dragover', function(e){ e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', function(){ drop.classList.remove('over'); });
+drop.addEventListener('drop', function(e){
+  e.preventDefault(); drop.classList.remove('over');
+  if(e.dataTransfer.files && e.dataTransfer.files[0]) send(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', function(){
+  if(fileInput.files && fileInput.files[0]) send(fileInput.files[0]);
+  fileInput.value = '';
+});
+function send(f){
+  showUpl('Загрузка: ' + f.name + ' …');
+  var fd = new FormData(); fd.append('file', f);
+  fetch('/api/uploads', {method:'POST', body:fd}).then(function(r){
+    if(!r.ok){ return r.text().then(function(t){ throw new Error('HTTP '+r.status+' '+t.slice(0,200)); }); }
+    return r.json();
+  }).then(function(){
+    showUpl('Принято: ' + f.name + '. Задача в очереди.');
+    poll();
+  }).catch(function(e){
+    showUpl('Ошибка загрузки: ' + e.message);
+  });
+}
 
-function renderJobs(js){$('#jobs').innerHTML=js.map(x=>{
-  const tot=x.frames_total||0,done=x.frames_done||0,pct=tot?Math.round(done/tot*100):0;
-  return `<div class="m"><span>${esc(x.id)} · ${esc(x.kind)} · ${x.status==='error'?`<span class="st-rejected">${esc(x.error||'error')}</span>`:esc(x.status)}</span><b>${done}/${tot||'?'}</b></div>
-  <div class="bar"><i style="width:${x.status==='done'?100:pct}%"></i></div>`}).join('')}
+/* ---- статусы событий ---- */
+function setStatus(id, st){
+  api('/api/events/'+id+'/status', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({status: st})})
+    .then(poll).catch(function(e){ showError('Статус не обновился: '+e.message); });
+}
+window.setStatus = setStatus;
 
-function renderEvents(evs){if(!evs.length){$('#events').innerHTML='<span class="mut">ждём события…</span>';return}
-  $('#events').innerHTML=evs.map(e=>`<div class="ev">
-   ${e.evidence?`<img src="/evidence/${esc(e.evidence)}" loading="lazy">`:'<div></div>'}
-   <div><div class="t">${esc(LABELS[e.etype]||e.etype)}</div>
-    <div class="mut">job ${esc(e.job_id)} · t=${(e.started_t||0).toFixed(1)}–${(e.ended_t??e.last_t??0).toFixed(1)}с · conf ${Math.round((e.conf||0)*100)}% ${e.meta&&e.meta.zone?`· зона ${esc(e.meta.zone)}`:''}</div>
-    <div class="st-${esc(e.status)}" style="font-size:12px;margin:4px 0">${esc(ST[e.status]||e.status)} · событие #${e.id}</div>
-    ${e.status==='new'?`<button class="ok" onclick="setStatus(${e.id},'confirmed')">подтвердить</button> <button class="bad" onclick="setStatus(${e.id},'rejected')">отклонить</button>`:''}
-   </div></div>`).join('')}
-window.setStatus=setStatus}
+/* ---- рендеры ---- */
+function renderJobs(js){
+  var root = $('#jobs');
+  if(!js || !js.length){ root.innerHTML = '<span class="mut">нет задач</span>'; return; }
+  root.innerHTML = js.map(function(x){
+    var tot = x.frames_total||0, done = x.frames_done||0;
+    var pct = tot ? Math.round(done/tot*100) : 0;
+    var st = x.status==='error' ? '<span class="st-rejected">'+esc(x.error||'error')+'</span>' : esc(x.status);
+    return '<div class="m"><span>'+esc(x.id)+' · '+esc(x.kind)+' · '+st+'</span><b>'+done+'/'+(tot||'?')+'</b></div>'+
+           '<div class="bar"><i style="width:'+(x.status==='done'?100:pct)+'%"></i></div>';
+  }).join('');
+}
+function renderEvents(evs){
+  var root = $('#events');
+  if(!evs || !evs.length){ root.innerHTML = '<span class="mut">ждём события…</span>'; return; }
+  root.innerHTML = evs.map(function(e){
+    var img = e.evidence ? '<img src="/evidence/'+esc(e.evidence)+'" loading="lazy">' : '<div></div>';
+    var zone = (e.meta && e.meta.zone) ? ' · зона '+esc(e.meta.zone) : '';
+    var tEnd = (e.ended_t!=null ? e.ended_t : e.last_t) || 0;
+    var btns = (e.status==='new')
+      ? '<button class="ok" onclick="setStatus('+e.id+',\'confirmed\')">подтвердить</button> <button class="bad" onclick="setStatus('+e.id+',\'rejected\')">отклонить</button>'
+      : '';
+    return '<div class="ev">'+img+
+      '<div><div class="t">'+esc(LABELS[e.etype]||e.etype)+'</div>'+
+      '<div class="mut">job '+esc(e.job_id)+' · t='+(e.started_t||0).toFixed(1)+'–'+tEnd.toFixed(1)+'с · conf '+Math.round((e.conf||0)*100)+'%'+zone+'</div>'+
+      '<div class="st-'+esc(e.status)+'" style="font-size:12px;margin:4px 0">'+esc(ST[e.status]||e.status)+' · событие #'+e.id+'</div>'+
+      btns+'</div></div>';
+  }).join('');
+}
+function renderAnalytics(a){
+  var bt = a.by_type||{}, keys = Object.keys(bt);
+  var box = $('#by_type');
+  if(!keys.length){ box.innerHTML = 'пока пусто'; }
+  else {
+    var mx = Math.max.apply(null, keys.map(function(k){ return bt[k]; }));
+    box.innerHTML = keys.map(function(k){
+      return '<div class="m"><span>'+esc(LABELS[k]||k)+'</span><b>'+bt[k]+'</b></div>'+
+             '<div class="bar"><i style="width:'+Math.round(bt[k]/mx*100)+'%"></i></div>';
+    }).join('');
+  }
+  var bs = a.by_status||{};
+  $('#s_new').textContent = bs['new']||0;
+  $('#s_conf').textContent = bs.confirmed||0;
+  $('#s_rej').textContent = bs.rejected||0;
+  $('#s_prec').textContent = (a.precision==null) ? '—' : Math.round(a.precision*100)+'%';
+}
+function renderPerf(p){
+  var L = p.live||{};
+  $('#m_fps').textContent = (L.analysis_fps!=null ? L.analysis_fps : '—');
+  $('#m_frames').textContent = L.frames||0;
+  $('#m_calls').textContent = L.calls||0;
+  $('#m_lat').textContent = (L.lat_avg_ms!=null ? L.lat_avg_ms : '—')+' / '+(L.lat_p95_ms!=null ? L.lat_p95_ms : '—');
+  $('#m_queue').textContent = (L.queue!=null ? L.queue : 0);
+  $('#conn').textContent = L.calls ? 'TPU: отвечает' : 'TPU: ожидание';
+  if(L.lat_avg_ms!=null){
+    spark.push(L.lat_avg_ms); if(spark.length>60) spark = spark.slice(-60);
+    var mx = Math.max.apply(null, spark.concat([1]));
+    var pts = spark.map(function(v,i){ return (i*(300/59)).toFixed(1)+','+(42-(v/mx)*38).toFixed(1); }).join(' ');
+    $('#spark').innerHTML = '<polyline points="'+pts+'" fill="none" stroke="#2f6bff" stroke-width="2"/>';
+  }
+  $('#bench').innerHTML = (p.bench||[]).slice(0,3).map(function(b){
+    return 'bench '+esc(b.program)+': p95 '+Math.round((b.latency_p95_s||0)*1000)+' мс, fps '+(b.fps||0).toFixed(2);
+  }).join('<br>');
+  $('#programs').innerHTML = (p.programs||[]).map(function(x){ return '<span class="chip">'+esc(x.name)+'</span>'; }).join(' ');
+}
 
-function renderPerf(p){const L=p.live||{};
-  $('#m_fps').textContent=L.analysis_fps??'—';$('#m_frames').textContent=L.frames??0;
-  $('#m_calls').textContent=L.calls??0;
-  $('#m_lat').textContent=(L.lat_avg_ms??'—')+' / '+(L.lat_p95_ms??'—');
-  $('#m_queue').textContent=L.queue??0;
-  $('#conn').textContent=L.calls?'TPU: отвечает':'TPU: ожидание';
-  if(L.lat_avg_ms!=null){spark.push(L.lat_avg_ms);spark=spark.slice(-60);
-    const mx=Math.max(...spark,1),pts=spark.map((v,i)=>`${i*(300/59)},${42-v/mx*38}`).join(' ');
-    $('#spark').innerHTML=`<polyline points="${pts}" fill="none" stroke="#2f6bff" stroke-width="2"/>`}
-  $('#bench').innerHTML=(p.bench||[]).slice(0,3).map(b=>`bench ${esc(b.program)}: p95 ${Math.round((b.latency_p95_s||0)*1000)} мс, fps ${ (b.fps||0).toFixed(2)}`).join('<br>');
-  $('#programs').innerHTML=(p.programs||[]).map(x=>`<span class="chip">${esc(x.name)}</span>`).join(' ')}
-
-function renderAnalytics(a){const bt=a.by_type||{},keys=Object.keys(bt);
-  $('#by_type').innerHTML=keys.length?keys.map(k=>{const mx=Math.max(...Object.values(bt));
-    return `<div class="m"><span>${esc(LABELS[k]||k)}</span><b>${bt[k]}</b></div><div class="bar"><i style="width:${bt[k]/mx*100}%"></i></div>`}).join(''):'пока пусто';
-  const bs=a.by_status||{};$('#s_new').textContent=bs.new||0;$('#s_conf').textContent=bs.confirmed||0;
-  $('#s_rej').textContent=bs.rejected||0;$('#s_prec').textContent=a.precision==null?'—':Math.round(a.precision*100)+'%'}
-
-async function poll(){
-  const [js,evs,an,pf]=await Promise.all([
-    j('/api/jobs'),
-    j(`/api/events?limit=30&etype=${encodeURIComponent($('#f_type').value)}&status=${encodeURIComponent($('#f_status').value)}`),
-    j('/api/analytics'), j('/api/performance')]);
-  renderJobs(js);renderEvents(evs);renderAnalytics(an);renderPerf(pf)}
-
-j('/api/models_info').then(mi=>{$('#models_info').innerHTML=Object.entries(mi).map(([k,v])=>
-  `<div class="m" style="display:block;margin-bottom:8px"><b>${esc(k)}</b><br>
-   <span class="mut">${esc(v.source||'')}<br>${esc(v.passport||'')}<br>классы: ${esc(v.classes||'')}</span></div>`).join('')||'—'});
-poll();setInterval(poll,1500);
+/* ---- поллинг ---- */
+function poll(){
+  var url = '/api/events?limit=30&etype='+encodeURIComponent($('#f_type').value)+'&status='+encodeURIComponent($('#f_status').value);
+  Promise.all([ api('/api/jobs'), api(url), api('/api/analytics'), api('/api/performance') ])
+    .then(function(res){
+      showError('');
+      renderJobs(res[0]); renderEvents(res[1]); renderAnalytics(res[2]); renderPerf(res[3]);
+    })
+    .catch(function(e){ showError('Нет связи с сервером: '+e.message); });
+}
+$('#refresh').addEventListener('click', poll);
+$('#f_type').addEventListener('change', poll);
+$('#f_status').addEventListener('change', poll);
+Object.keys(LABELS).forEach(function(k){ $('#f_type').append(new Option(LABELS[k], k)); });
+api('/api/models_info').then(function(mi){
+  $('#models_info').innerHTML = Object.keys(mi).map(function(k){
+    var v = mi[k];
+    return '<div style="margin-bottom:8px"><b>'+esc(k)+'</b><br><span class="mut">'+esc(v.source||'')+'<br>'+esc(v.passport||'')+'<br>классы: '+esc(v.classes||'')+'</span></div>';
+  }).join('') || '—';
+}).catch(function(){});
+poll();
+setInterval(poll, 1500);
 </script>
 </body></html>
