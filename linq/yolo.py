@@ -1,122 +1,183 @@
-"""Подготовка кадров и разбор ответов для моделей семейства YOLO."""
+"""YOLO-специфичный препроцессинг и постпроцессинг.
+Препроцессинг: letterbox 640×640 с паддингом 114, нормализация /255, CHW float32.
+Постпроцессинг: декод (cx,cy,w,h)→(x1,y1,x2,y2), NMS по классам, возврат списка Detection.
+"""
 from dataclasses import dataclass, field
+from typing import List, Optional, Tuple
 
+import cv2
 import numpy as np
 from PIL import Image
-
-# точки тела модели Б (номера по стандарту COCO)
-KP_NOSE, KP_SHOULDER_L, KP_SHOULDER_R = 0, 5, 6
-KP_HIP_L, KP_HIP_R = 11, 12
-KP_ANKLE_L, KP_ANKLE_R = 15, 16
-
-# классы модели А, которые используем в правилах
-CLASS_PERSON, CLASS_CELL_PHONE = 0, 67
-CLASS_VEHICLES = (2, 3, 5, 7)  # car, motorcycle, bus, truck
-CLASS_NAMES = {0: 'person', 2: 'car', 3: 'motorcycle', 5: 'bus',
-               7: 'truck', 67: 'cell phone'}
 
 
 @dataclass
 class Detection:
-    """Один найденный объект: класс, уверенность, рамка (x1,y1,x2,y2) в пикселях кадра."""
     class_id: int
     score: float
-    box: tuple
-    keypoints: tuple = field(default_factory=tuple)  # для модели Б: ((x, y, conf), ... 17)
+    box: Tuple[float, float, float, float]  # (x1, y1, x2, y2) в пикселях исходного кадра
+    keypoints: Optional[Tuple] = None        # для pose-модели: 17 точек (x, y, conf)
+
+    @property
+    def center(self) -> Tuple[float, float]:
+        x1, y1, x2, y2 = self.box
+        return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
 
 
-def letterbox_params(image: Image.Image, hw=(640, 640)):
-    """Как вписать кадр в квадрат: масштаб и отступы слева/сверху."""
+# --- препроцессинг (ровно как в их example.ipynb) ---
+def preprocess_yolo(image: Image.Image, hw: Tuple[int, int] = (640, 640)) -> np.ndarray:
+    """PIL → float32 NCHW 640×640 letterbox."""
+    img = np.asarray(image.convert("RGB"))
+    h, w = img.shape[:2]
+    ratio = min(hw[0] / h, hw[1] / w)
+    new_w, new_h = int(round(w * ratio)), int(round(h * ratio))
+    img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    dw = (hw[1] - new_w) / 2.0
+    dh = (hw[0] - new_h) / 2.0
+    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+    img = cv2.copyMakeBorder(img, top, bottom, left, right,
+                             cv2.BORDER_CONSTANT, value=(114, 114, 114))
+    img = img.astype(np.float32) / 255.0
+    return np.ascontiguousarray(img.transpose(2, 0, 1))[None]
+
+
+def _letterbox_params(image: Image.Image, hw=(640, 640)):
+    """Возвращает (ratio, pad_w, pad_h) для обратного масштабирования боксов."""
     w, h = image.size
-    th, tw = hw
-    scale = min(tw / w, th / h)
-    nw, nh = int(w * scale), int(h * scale)
-    return scale, (tw - nw) // 2, (th - nh) // 2
+    ratio = min(hw[0] / h, hw[1] / w)
+    new_w, new_h = int(round(w * ratio)), int(round(h * ratio))
+    pad_w = (hw[1] - new_w) / 2.0
+    pad_h = (hw[0] - new_h) / 2.0
+    return ratio, pad_w, pad_h
 
 
-def preprocess_yolo(image: Image.Image, hw=(640, 640)) -> np.ndarray:
-    """Кадр -> тензор: вписали с серыми полями, цвета 0..1, порядок каналов CHW."""
-    th, tw = hw
-    scale, pad_x, pad_y = letterbox_params(image, hw)
-    nw, nh = int(image.size[0] * scale), int(image.size[1] * scale)
-    canvas = Image.new('RGB', (tw, th), (114, 114, 114))
-    canvas.paste(image.resize((nw, nh)), (pad_x, pad_y))
-    arr = np.asarray(canvas, dtype=np.float32) / 255.0
-    return np.transpose(arr, (2, 0, 1))[None, ...]
+letterbox_params = _letterbox_params
 
 
-def _nms(boxes, scores, iou_thr):
-    """Убираем дубли: из перекрывающихся рамок оставляем самую уверенную."""
-    x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
-    areas = (x2 - x1) * (y2 - y1)
-    order = np.argsort(scores)[::-1]
-    picked = []
-    while order.size:
-        i = order[0]
-        picked.append(i)
-        xx1 = np.maximum(x1[i], x1[order[1:]])
-        yy1 = np.maximum(y1[i], y1[order[1:]])
-        xx2 = np.minimum(x2[i], x2[order[1:]])
-        yy2 = np.minimum(y2[i], y2[order[1:]])
-        inter = np.maximum(0.0, xx2 - xx1) * np.maximum(0.0, yy2 - yy1)
-        iou = inter / (areas[i] + areas[order[1:]] - inter + 1e-9)
-        order = order[1:][iou < iou_thr]
-    return picked
+def _xywh_to_xyxy(boxes: np.ndarray) -> np.ndarray:
+    x, y, w, h = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+    return np.stack([x - w / 2, y - h / 2, x + w / 2, y + h / 2], axis=1)
 
 
-def _decode_boxes(t):
-    """Из «центр+размер» в «углы»."""
-    x1 = t[:, 0] - t[:, 2] / 2
-    y1 = t[:, 1] - t[:, 3] / 2
-    x2 = t[:, 0] + t[:, 2] / 2
-    y2 = t[:, 1] + t[:, 3] / 2
-    return np.stack([x1, y1, x2, y2], axis=1)
+def postprocess_yolo_detect(
+    raw_output: np.ndarray,
+    conf_thr: float = 0.3,
+    iou_thr: float = 0.45,
+    class_ids: Optional[Tuple[int, ...]] = None,
+) -> List[Detection]:
+    """Декод сырого выхода YOLOv8 detect (shape 1,84,8400) → список Detection."""
+    out = np.asarray(raw_output)
+    if out.shape != (1, 84, 8400):
+        raise ValueError(f"Ожидался выход (1, 84, 8400), получен {out.shape}. "
+                         "Модель не YOLOv8 detect или не тот выходной тензор.")
+    if not np.issubdtype(out.dtype, np.floating):
+        raise ValueError("Получен не float-выход — проверьте распаковку результата.")
+    if not np.isfinite(out).all():
+        raise ValueError("В выходе TPU есть NaN/Inf.")
 
+    preds = out[0].T.astype(np.float32)          # (8400, 84)
+    boxes_xywh = preds[:, :4]
+    scores = preds[:, 4:]
+    class_ids_arr = scores.argmax(axis=1)
+    confs = scores.max(axis=1)
 
-def postprocess_yolo_detect(tensor: np.ndarray, conf_thr=0.35, iou_thr=0.5,
-                            class_ids=None):
-    """Ответ модели А -> список Detection (координаты пока в квадрате 640)."""
-    t = tensor[0].T                       # (N, 4 + число классов)
-    scores_all = t[:, 4:]
-    class_id = np.argmax(scores_all, axis=1)
-    score = np.max(scores_all, axis=1)
-    keep = score > conf_thr
+    keep = confs > conf_thr
+    boxes_xywh = boxes_xywh[keep]
+    class_ids_arr = class_ids_arr[keep]
+    confs = confs[keep]
+
     if class_ids is not None:
-        keep &= np.isin(class_id, class_ids)
-    t, class_id, score = t[keep], class_id[keep], score[keep]
-    if not len(t):
-        return []
-    boxes = _decode_boxes(t[:, :4])
-    picked = _nms(boxes, score, iou_thr)
-    return [Detection(int(class_id[i]), float(score[i]),
-                      tuple(float(v) for v in boxes[i])) for i in picked]
+        cls_mask = np.isin(class_ids_arr, np.array(list(class_ids), dtype=np.int64))
+        boxes_xywh = boxes_xywh[cls_mask]
+        class_ids_arr = class_ids_arr[cls_mask]
+        confs = confs[cls_mask]
+
+    boxes_xyxy = _xywh_to_xyxy(boxes_xywh)
+    detections: List[Detection] = []
+    for cls in np.unique(class_ids_arr):
+        pos = np.flatnonzero(class_ids_arr == cls)
+        idx = cv2.dnn.NMSBoxes(
+            boxes_xyxy[pos].tolist(),
+            confs[pos].tolist(),
+            conf_thr, iou_thr,
+        )
+        for li in np.asarray(idx, dtype=np.int64).reshape(-1):
+            i = pos[li]
+            detections.append(Detection(
+                class_id=int(class_ids_arr[i]),
+                score=float(confs[i]),
+                box=tuple(float(v) for v in boxes_xyxy[i]),
+            ))
+    return sorted(detections, key=lambda d: d.score, reverse=True)
 
 
-def postprocess_yolo_pose(tensor: np.ndarray, conf_thr=0.4, iou_thr=0.5):
-    """Ответ модели Б -> список Detection с точками тела."""
-    t = tensor[0].T                       # (N, 4 + 1 + 51)
-    score = t[:, 4]
-    keep = score > conf_thr
-    t, score = t[keep], score[keep]
-    if not len(t):
-        return []
-    boxes = _decode_boxes(t[:, :4])
-    n_kp = (t.shape[1] - 5) // 3
-    kpts = t[:, 5:].reshape(-1, n_kp, 3)
-    picked = _nms(boxes, score, iou_thr)
-    return [Detection(0, float(score[i]), tuple(float(v) for v in boxes[i]),
-                      tuple(tuple(float(x) for x in kp) for kp in kpts[i]))
-            for i in picked]
+def postprocess_yolo_pose(
+    raw_output: np.ndarray,
+    conf_thr: float = 0.35,
+    iou_thr: float = 0.45,
+) -> List[Detection]:
+    """Декод выхода YOLOv8-pose. Формат зависит от экспорта:
+       - если (1, 56, 8400): первые 4 — box, 5 — obj_conf, 6..22 — 17 keypoints×3, остальное — классы;
+       - если (1, 17, 3, 8400) или (1, 17, 8400): только keypoints.
+       Для простоты обрабатываем вариант (1, 56, 8400) — стандарт ultralytics export."""
+    out = np.asarray(raw_output)
+    if out.ndim != 3:
+        raise ValueError(f"pose-выход должен быть 3D, получен {out.shape}")
+
+    # Нормализуем к виду (N, 56, 8400)
+    if out.shape[0] == 1 and out.shape[1] == 56 and out.shape[2] == 8400:
+        pass
+    elif out.shape[0] == 1 and out.shape[1] == 17 and out.shape[2] in (3, 8400):
+        # только keypoints без bboxes — такой формат нам не подходит без детекта
+        raise ValueError(f"Неподдерживаемый pose-формат {out.shape}; нужен (1,56,8400)")
+    else:
+        raise ValueError(f"Неизвестный pose-формат {out.shape}")
+
+    preds = out[0].T.astype(np.float32)          # (8400, 56)
+    boxes_xywh = preds[:, :4]
+    obj_conf = preds[:, 4]
+    kpts_flat = preds[:, 5:5 + 17 * 3]           # (8400, 51)
+    cls_scores = preds[:, 5 + 17 * 3:]           # (8400, 0) для pose-модели обычно пусто
+
+    keep = obj_conf > conf_thr
+    boxes_xywh = boxes_xywh[keep]
+    obj_conf = obj_conf[keep]
+    kpts_flat = kpts_flat[keep]
+
+    boxes_xyxy = _xywh_to_xyxy(boxes_xywh)
+    detections: List[Detection] = []
+    for i in range(boxes_xyxy.shape[0]):
+        kpts = kpts_flat[i].reshape(17, 3)       # (x, y, conf) для каждой точки
+        detections.append(Detection(
+            class_id=0,                           # person
+            score=float(obj_conf[i]),
+            box=tuple(float(v) for v in boxes_xyxy[i]),
+            keypoints=tuple((float(k[0]), float(k[1]), float(k[2])) for k in kpts),
+        ))
+    return detections
 
 
-def to_original(dets, scale, pad_x, pad_y):
-    """Пересчёт координат из квадрата 640 обратно в пиксели исходного кадра."""
+def to_original(detections: List[Detection], ratio: float, pad_w: float, pad_h: float) -> List[Detection]:
+    """Пересчёт боксов и keypoints из letterbox-координат обратно в исходный кадр."""
     out = []
-    for d in dets:
+    for d in detections:
         x1, y1, x2, y2 = d.box
-        box = ((x1 - pad_x) / scale, (y1 - pad_y) / scale,
-               (x2 - pad_x) / scale, (y2 - pad_y) / scale)
-        kps = tuple(((x - pad_x) / scale, (y - pad_y) / scale, c)
-                    for x, y, c in d.keypoints)
-        out.append(Detection(d.class_id, d.score, box, kps))
+        x1 = (x1 - pad_w) / ratio
+        y1 = (y1 - pad_h) / ratio
+        x2 = (x2 - pad_w) / ratio
+        y2 = (y2 - pad_h) / ratio
+        new_box = (x1, y1, x2, y2)
+        new_kpts = None
+        if d.keypoints is not None:
+            new_kpts = tuple(
+                (((k[0] - pad_w) / ratio, (k[1] - pad_h) / ratio, k[2]) for k in d.keypoints)
+            )
+        out.append(Detection(d.class_id, d.score, new_box, new_kpts))
     return out
+
+
+PREPROCESSORS = {'yolo': preprocess_yolo}
+POSTPROCESSORS = {
+    'yolo_detect': postprocess_yolo_detect,
+    'yolo_pose': postprocess_yolo_pose,
+}
