@@ -14,8 +14,8 @@ from PIL import Image
 class Detection:
     class_id: int
     score: float
-    box: Tuple[float, float, float, float]  # (x1, y1, x2, y2) в пикселях исходного кадра
-    keypoints: Optional[Tuple] = None        # для pose-модели: 17 точек (x, y, conf)
+    box: Tuple[float, float, float, float]  # (x1, y1, x2, y2)
+    keypoints: Optional[Tuple] = None
 
     @property
     def center(self) -> Tuple[float, float]:

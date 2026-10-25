@@ -24,10 +24,10 @@ class FrameChain:
         pose = self.backend.run('yolo_pose', dict(tensors))['output0']
         smoke = self.backend.run('smoke', dict(tensors))['output0']
 
+        # Должно быть так:
         d_det = to_original(postprocess_yolo_detect(det, conf_thr=self.conf_detect), scale, px, py)
-        d_pose = to_original(postprocess_yolo_pose(pose, conf_thr=self.conf_pose), scale, px, py)
-        d_smoke = to_original(postprocess_yolo_detect(smoke, conf_thr=self.conf_smoke,
-                                                      class_ids=R.SMOKE_CLASSES), scale, px, py)
+        d_pose = to_original(postprocess_yolo_pose(pose, conf_thr=self.conf_pose), scale, px, py)  # ← yolo_pose, не yolo_detect!
+        d_smoke = to_original(postprocess_yolo_detect(smoke, conf_thr=self.conf_smoke, class_ids=R.SMOKE_CLASSES), scale, px, py)
 
         persons = [d for d in d_det if d.class_id == R.CLS_PERSON]
         machines = [d for d in d_det if d.class_id in R.CLS_VEHICLES]

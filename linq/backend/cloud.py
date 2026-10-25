@@ -25,7 +25,7 @@ CONNECTION_ERRORS = (pika.exceptions.AMQPError, OSError)
 class CloudBackend:
     name = 'cloud'
 
-    def __init__(self, settings: Settings, max_attempts: int = 4, backoff_base: float = 1.5):
+    def __init__(self, settings: Settings, max_attempts: int = 2, backoff_base: float = 1.5):
         self.s = settings
         self.max_attempts = max_attempts
         self.backoff_base = backoff_base
