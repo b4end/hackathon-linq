@@ -15,24 +15,19 @@ class ProgramSpec:
 
 
 PROGRAMS = {
-    # эталон для проверки тракта и замеров (если файл есть в кэше)
     'resnet50': ProgramSpec('resnet50', 'torch_resnet50_b1_o5_h1m.tpu',
                             {'input.1': (1, 3, 224, 224)}, ('495',),
                             (224, 224), 'resnet', 'resnet'),
-    # основной детектор: люди, телефоны, техника (COCO)
-    'yolo_detect': ProgramSpec('yolo_detect', 'yolov8m.tpu',
+    'yolo_detect': ProgramSpec('yolo_detect', 'yolov8m_b1_o5_h1m1.tpu',  # ← добавить суффикс
                                {'images': (1, 3, 640, 640)}, ('output0',),
                                (640, 640), 'yolo', 'yolo_detect'),
-    # позы: падение / неподвижность
-    'yolo_pose': ProgramSpec('yolo_pose', 'yolov8m-pose.tpu',
+    'yolo_pose': ProgramSpec('yolo_pose', 'yolov8m-pose_b1_o5_h1m1.tpu',  # ← добавить суффикс
                              {'images': (1, 3, 640, 640)}, ('output0',),
                              (640, 640), 'yolo', 'yolo_pose'),
-    # курение / открытый огонь: в правила берём cigarette и smoke
-    'smoke': ProgramSpec('smoke', 'smoke_model.tpu',
+    'smoke': ProgramSpec('smoke', 'smoke_model_b1_o5_h1m1.tpu',  # ← добавить суффикс
                          {'images': (1, 3, 640, 640)}, ('output0',),
                          (640, 640), 'yolo', 'yolo_detect'),
-    # высота: страховочная привязь (Thalos fall-protection v1), кропом по зоне
-    'harness': ProgramSpec('harness', 'fallprotection.tpu',
+    'harness': ProgramSpec('harness', 'fall_protection_b1_o5_h1m.tpu',  # ← добавить суффикс
                            {'images': (1, 3, 640, 640)}, ('output0',),
                            (640, 640), 'yolo', 'yolo_detect'),
 }
