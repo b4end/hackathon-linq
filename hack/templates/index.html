@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="ru"><head>
+<meta charset="utf-8">
+<title>LinQ Safety — MVP</title>
+<style>
+ body{font-family:system-ui,Segoe UI,Roboto,sans-serif;margin:0;background:#0f1115;color:#e6e8eb}
+ header{padding:14px 22px;background:#161a22;border-bottom:1px solid #262b36;display:flex;align-items:center;gap:16px}
+ header h1{font-size:16px;margin:0;letter-spacing:.3px}
+ .wrap{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:16px}
+ .card{background:#161a22;border:1px solid #262b36;border-radius:10px;padding:14px}
+ .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.8px;color:#8b94a7;margin:0 0 10px}
+ button{background:#2f6bff;color:#fff;border:0;padding:8px 14px;border-radius:6px;cursor:pointer}
+ button[disabled]{opacity:.5;cursor:not-allowed}
+ input[type=file]{color:#cfd3dc}
+ .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+ .m{background:#0f1320;border:1px solid #262b36;border-radius:8px;padding:10px}
+ .m .v{font-size:20px;font-weight:600}
+ .m .l{font-size:11px;color:#8b94a7;text-transform:uppercase;letter-spacing:.6px}
+ .bar{height:6px;background:#0f1320;border-radius:3px;overflow:hidden;margin-top:8px}
+ .bar > i{display:block;height:100%;background:#2f6bff;width:0%}
+ .events{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;max-height:70vh;overflow:auto}
+ .ev{background:#0f1320;border:1px solid #262b36;border-radius:8px;overflow:hidden}
+ .ev img{width:100%;display:block}
+ .ev .meta{padding:8px 10px;font-size:12px;color:#cfd3dc}
+ .ev .meta b{color:#fff}
+ .status{font-size:12px;color:#8b94a7}
+ .err{color:#ff6b6b}
+</style></head><body>
+<header>
+  <h1>LinQ Safety · MVP</h1>
+  <span class="status" id="status">idle</span>
+  <div style="flex:1"></div>
+  <span class="status" id="jobid"></span>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <h2>Загрузка видео</h2>
+    <form id="upl" style="display:flex;gap:10px;align-items:center">
+      <input type="file" id="file" accept="video/*" required>
+      <button type="submit" id="go">Запустить анализ</button>
+    </form>
+    <div class="bar"><i id="prog"></i></div>
+  </div>
+
+  <div class="card">
+    <h2>Метрики</h2>
+    <div class="metrics">
+      <div class="m"><div class="l">Кадров всего</div><div class="v" id="m_total">0</div></div>
+      <div class="m"><div class="l">Обработано</div><div class="v" id="m_done">0</div></div>
+      <div class="m"><div class="l">FPS</div><div class="v" id="m_fps">0</div></div>
+      <div class="m"><div class="l">Latency p95, мс</div><div class="v" id="m_lat">0</div></div>
+    </div>
+    <div class="status" id="errline"></div>
+  </div>
+</div>
+
+<div class="wrap" style="padding-top:0">
+  <div class="card" style="grid-column:1 / -1">
+    <h2>События (<span id="evcount">0</span>)</h2>
+    <div class="events" id="events"></div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let lastEvCount = 0;
+
+$("#upl").addEventListener("submit", async e => {
+  e.preventDefault();
+  const f = $("#file").files[0]; if (!f) return;
+  $("#go").disabled = true;
+  const fd = new FormData(); fd.append("file", f);
+  const r = await fetch("/upload", {method:"POST", body:fd});
+  const j = await r.json();
+  $("#jobid").textContent = "job: " + j.job_id;
+  $("#go").disabled = false;
+  poll();
+});
+
+async function poll() {
+  const r = await fetch("/status"); const s = await r.json();
+  $("#status").textContent = s.status + (s.status==="running" ? " · " + Math.round(s.progress*100) + "%" : "");
+  $("#prog").style.width = (s.progress*100).toFixed(1) + "%";
+  $("#m_total").textContent = s.metrics.frames_total;
+  $("#m_done").textContent  = s.metrics.frames_done;
+  $("#m_fps").textContent   = s.metrics.fps;
+  $("#m_lat").textContent   = s.metrics.latency_ms_p95;
+  $("#errline").textContent = s.metrics.error ? ("Ошибка: " + s.metrics.error) : "";
+  $("#errline").className   = s.metrics.error ? "status err" : "status";
+
+  if (s.events.length !== lastEvCount) {
+    lastEvCount = s.events.length;
+    renderEvents(s.events);
+  }
+  if (s.status === "running") setTimeout(poll, 800);
+}
+
+function renderEvents(evs) {
+  $("#evcount").textContent = evs.length;
+  const root = $("#events"); root.innerHTML = "";
+  // последние сверху
+  evs.slice().reverse().forEach(ev => {
+    const el = document.createElement("div");
+    el.className = "ev";
+    el.innerHTML = `
+      <img src="${ev.frame_url}" loading="lazy">
+      <div class="meta">
+        <b>#${ev.id}</b> · кадр ${ev.frame_idx} · ${ev.time_sec}с<br>
+        классы: ${ev.classes.join(",")} · conf ${Math.max(...ev.detections.map(d=>d.confidence)).toFixed(2)}<br>
+        latency ${ev.latency_ms} мс
+      </div>`;
+    root.appendChild(el);
+  });
+}
+
+// авто-старт опроса, если уже есть задача
+fetch("/status").then(r=>r.json()).then(s=>{ if (s.status==="running") poll(); });
+</script>
+</body></html>
