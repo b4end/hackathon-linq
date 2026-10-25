@@ -58,7 +58,7 @@ def preprocess(bgr_frame: np.ndarray) -> np.ndarray:
 # ---- постпроцессинг YOLOv8 (как в примере) ----
 def postprocess_yolov8(raw_output, conf_thr=CONF_THR, iou_thr=IOU_THR):
     out = np.asarray(raw_output)
-    if out.shape != (1, 7, 8400):
+    if out.shape != (1, 84, 8400):
         raise ValueError(f"Unexpected TPU output shape {out.shape}")
     preds = out[0].T.astype(np.float32)
     scores = preds[:, 4:]
