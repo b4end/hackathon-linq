@@ -6,11 +6,11 @@ import argparse
 from pathlib import Path
 
 MODELS = {
-    # имя -> (веса ultralytics, размер входа)
-    'yolo_detect': ('yolov8n.pt', 640),
-    'yolo_pose': ('yolov8n-pose.pt', 640),
+    'yolo_detect': ('yolov8m_b1_o5_h1m1.tpu', 640),
+    'yolo_pose': ('yolov8m-pose_b1_o5_h1m1.tpu', 640),
+    'smoke': ('smoke_model_b1_o5_h1m1.tpu', 640),
+    'harness': ('fall_protection_b1_o5_h1m.tpu', 640),
 }
-
 
 def main() -> None:
     parser = argparse.ArgumentParser(description='Экспорт модели в ONNX')

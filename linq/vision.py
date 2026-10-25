@@ -33,5 +33,10 @@ def postprocess_resnet(scores: np.ndarray, top_k: int = 5):
     return [(int(i) + CLASS_OFFSET, float(flat[i])) for i in order]
 
 
-PREPROCESSORS = {'resnet': preprocess_resnet}
-POSTPROCESSORS = {'resnet': postprocess_resnet}
+from linq.yolo import (postprocess_yolo_detect, postprocess_yolo_pose,
+                       preprocess_yolo)
+
+PREPROCESSORS = {'resnet': preprocess_resnet, 'yolo': preprocess_yolo}
+POSTPROCESSORS = {'resnet': postprocess_resnet,
+                  'yolo_detect': postprocess_yolo_detect,
+                  'yolo_pose': postprocess_yolo_pose}
